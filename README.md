@@ -54,13 +54,33 @@ Navigate to the backend directory:
 cd IndiChessBackend
 ```
 
-Create a `.env` file in the `IndiChessBackend` directory with your credentials:
+Copy the example environment file and configure it:
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env with your actual credentials
+```
+
+Update the `.env` file with your credentials:
 
 ```env
+# Database Configuration
+DB_URL=jdbc:mysql://localhost:3306/indichessdb
 DB_USERNAME=root
 DB_PASSWORD=your_database_password
+
+# Google OAuth 2.0
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
+
+# JWT Secret (generate a random 256-bit string)
+JWT_SECRET=your_secure_random_jwt_secret_here
+
+# Server Port
+SERVER_PORT=8080
+FRONTEND_URL=http://localhost:3000
 ```
 
 **Getting Google OAuth Credentials:**
@@ -91,6 +111,13 @@ Navigate to the frontend directory:
 
 ```bash
 cd indichessfrontend
+```
+
+The `.env` file already exists with default settings. If needed, you can modify it:
+
+```env
+REACT_APP_API_URL=http://localhost:8080
+REACT_APP_WS_URL=http://localhost:8080/ws
 ```
 
 Install dependencies:

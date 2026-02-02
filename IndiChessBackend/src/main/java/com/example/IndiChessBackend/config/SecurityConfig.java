@@ -79,7 +79,7 @@ public class SecurityConfig {
                 .cors(c -> c.configurationSource(corsConfigurationSource())) // Apply CORS configuration
                 .csrf(csrf -> csrf.disable())  // Disable CSRF for now (may re-enable if necessary)
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/login", "/signup", "/oauth2/**", "/login/oauth2/**").permitAll()
+                        .requestMatchers("/login", "/signup", "/oauth2/**", "/login/oauth2/**", "/me").permitAll()
                         .anyRequest().authenticated()
                 )
                 .oauth2Login(oauth -> oauth

@@ -2,6 +2,7 @@ package com.example.IndiChessBackend.service;
 
 import com.example.IndiChessBackend.model.DTO.*;
 import com.example.IndiChessBackend.model.Match;
+import com.example.IndiChessBackend.model.MatchStatus;
 import com.example.IndiChessBackend.model.User;
 import com.example.IndiChessBackend.repo.MatchRepo;
 import com.example.IndiChessBackend.repo.UserRepo;
@@ -10,6 +11,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -27,11 +30,16 @@ import java.util.concurrent.ConcurrentHashMap;
 @RequiredArgsConstructor
 public class GameService {
 
+    private static final Logger logger = LoggerFactory.getLogger(GameService.class);
+
     private final MatchRepo matchRepo;
     private final UserRepo userRepo;
     private final JwtService jwtService;
     private final SimpMessagingTemplate messagingTemplate;
     private final MyUserDetailsService userDetailsService;
+    private final ChessMoveValidator chessMoveValidator;
+    private final MoveService moveService;
+    private final RatingService ratingService;
 
     // In-memory storage for active games (can be replaced with Redis for production)
     private final Map<Long, GameState> activeGames = new ConcurrentHashMap<>();
@@ -143,6 +151,12 @@ public class GameService {
         gameState.setPlayer2Username(match.getPlayer2().getUsername());
         gameState.setLastMoveTime(LocalDateTime.now());
 
+        // Set initial FEN in database
+        String initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        match.setFenCurrent(initialFen);
+        match.setCurrentPly(0);
+        matchRepo.save(match);
+
         return gameState;
     }
 
@@ -196,6 +210,40 @@ public class GameService {
             throw new RuntimeException("Invalid move: Black's turn but player is " + playerColor);
         }
 
+        // 🔒 VALIDATE MOVE - Check if move is legal according to chess rules
+        boolean isValidMove = chessMoveValidator.isValidMove(
+            gameState.getBoard(),
+            moveRequest.getFromRow(),
+            moveRequest.getFromCol(),
+            moveRequest.getToRow(),
+            moveRequest.getToCol(),
+            isWhiteTurn
+        );
+
+        if (!isValidMove) {
+            System.out.println("❌ INVALID MOVE REJECTED: Piece at [" + moveRequest.getFromRow() + "," + 
+                             moveRequest.getFromCol() + "] cannot move to [" + 
+                             moveRequest.getToRow() + "," + moveRequest.getToCol() + "]");
+            throw new RuntimeException("Invalid move: That move is not allowed by chess rules");
+        }
+
+        // Check if move would leave king in check (illegal)
+        boolean wouldBeInCheck = chessMoveValidator.wouldKingBeInCheck(
+            gameState.getBoard(),
+            moveRequest.getFromRow(),
+            moveRequest.getFromCol(),
+            moveRequest.getToRow(),
+            moveRequest.getToCol(),
+            isWhiteTurn
+        );
+
+        if (wouldBeInCheck) {
+            System.out.println("❌ INVALID MOVE REJECTED: Move would leave king in check");
+            throw new RuntimeException("Invalid move: Cannot leave your king in check");
+        }
+
+        System.out.println("✅ Move validated successfully");
+
         // Update board state
         String[][] newBoard = moveRequest.getBoard();
         if (newBoard == null) {
@@ -216,12 +264,35 @@ public class GameService {
         activeGames.put(matchId, gameState);
         System.out.println("✅ Game state updated. Now it's " + (!isWhiteTurn ? "White" : "Black") + "'s turn");
 
-        // Update match in database (optional - for persistence)
+        // 💾 PERSIST MOVE TO DATABASE
         try {
-            updateMatchInDatabase(matchId, moveRequest);
+            Optional<Match> matchOpt = matchRepo.findById(matchId);
+            if (matchOpt.isPresent()) {
+                Match match = matchOpt.get();
+                
+                // Save move to database with all details
+                moveService.saveMove(
+                    match,
+                    moveRequest.getFromRow(),
+                    moveRequest.getFromCol(),
+                    moveRequest.getToRow(),
+                    moveRequest.getToCol(),
+                    moveRequest.getPiece(),
+                    isWhiteTurn,
+                    moveRequest.getFenBefore(),
+                    moveRequest.getFenAfter(),
+                    moveRequest.getCapturedPiece(),
+                    moveRequest.getCastled(),
+                    moveRequest.getIsEnPassant(),
+                    moveRequest.getIsPromotion(),
+                    moveRequest.getPromotedTo()
+                );
+                
+                System.out.println("💾 Move persisted to database successfully");
+            }
         } catch (Exception e) {
-            System.err.println("⚠️ Failed to update database: " + e.getMessage());
-            // Continue anyway - in-memory state is more important
+            System.err.println("⚠️ Failed to persist move to database: " + e.getMessage());
+            // Continue anyway - in-memory state is the priority for real-time gameplay
         }
 
         // Create move notation
@@ -453,6 +524,29 @@ public class GameService {
             gameState.setStatus("RESIGNED");
             activeGames.put(matchId, gameState);
 
+            // Update match status in database and calculate ratings
+            try {
+                Optional<Match> matchOpt = matchRepo.findById(matchId);
+                if (matchOpt.isPresent()) {
+                    Match match = matchOpt.get();
+                    
+                    // Determine who resigned and set winner
+                    MatchStatus finalStatus;
+                    if (match.getPlayer1().getUsername().equals(username)) {
+                        finalStatus = MatchStatus.PLAYER2_WON; // Player1 resigned, Player2 wins
+                    } else {
+                        finalStatus = MatchStatus.PLAYER1_WON; // Player2 resigned, Player1 wins
+                    }
+                    
+                    handleGameCompletion(match, finalStatus);
+                    
+                } else {
+                    logger.warn("⚠️ Match {} not found in database", matchId);
+                }
+            } catch (Exception e) {
+                logger.error("❌ Failed to update match status and ratings: {}", e.getMessage());
+            }
+
             // Notify players
             GameStatusDTO statusDTO = new GameStatusDTO();
             statusDTO.setMatchId(matchId);
@@ -541,6 +635,25 @@ public class GameService {
         activeGames.entrySet().removeIf(entry ->
                 entry.getValue().getLastMoveTime().isBefore(cutoff)
         );
+    }
+
+    /**
+     * Helper method to handle game completion and update ratings
+     */
+    private void handleGameCompletion(Match match, MatchStatus finalStatus) {
+        try {
+            match.setStatus(finalStatus);
+            match.setFinishedAt(LocalDateTime.now());
+            matchRepo.save(match);
+            
+            // Update player ratings
+            ratingService.updateRatingsAfterGame(match);
+            
+            logger.info("🏆 Game {} completed with status: {}. Ratings updated.", 
+                       match.getId(), finalStatus);
+        } catch (Exception e) {
+            logger.error("❌ Failed to complete game and update ratings: {}", e.getMessage());
+        }
     }
 }
 

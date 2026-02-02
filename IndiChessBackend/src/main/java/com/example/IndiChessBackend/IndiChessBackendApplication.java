@@ -8,6 +8,7 @@ public class IndiChessBackendApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(IndiChessBackendApplication.class, args);
+        System.out.println("Chess Application Started Successfully!");
     }
 
 }

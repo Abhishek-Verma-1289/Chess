@@ -108,11 +108,17 @@
 			<artifactId>spring-boot-starter-logging</artifactId>
 		</dependency>
 
+	<!-- Environment Variables Support -->
+	<dependency>
+		<groupId>io.github.cdimascio</groupId>
+		<artifactId>dotenv-java</artifactId>
+		<version>3.0.0</version>
+	</dependency>
 
-	</dependencies>
+</dependencies>
 
-	<build>
-		<plugins>
+<build>
+	<plugins>
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-compiler-plugin</artifactId>
